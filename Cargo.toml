@@ -1,7 +1,12 @@
 [package]
 name = "rbx_install"
+description = "Rust crate to locate Roblox Studio installations."
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/pwnwrkz/rbx_install"
+keywords = ["roblox", "install"]
 
 [dependencies]
 thiserror = "2.0.18"
