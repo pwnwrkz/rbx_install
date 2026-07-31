@@ -22,8 +22,7 @@ Alternatively, just add a new entry in your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-rbx_install = { version = "0.1.0", features = ["vinegar"] }
-# You can disable the vinegar feature and it'll work just like normal roblox_install.
+rbx_install = "0.2.0"
 ```
 
 ## Example
