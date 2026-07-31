@@ -16,7 +16,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 const ROBLOX_STUDIO_PATH_VARIABLE: &str = "ROBLOX_STUDIO_PATH";
 
 /// Cache for the expensive platform-specific lookup.
-/// The env var is checked every time (it's cheap), but registry / HTTP / fs walks are cached.
 static PLATFORM_STUDIO: OnceLock<RobloxStudio> = OnceLock::new();
 
 #[derive(Debug, Error)]
@@ -49,15 +48,8 @@ pub enum Error {
     #[error("Couldn't find home directory")]
     HomeDirectoryNotFound,
 
-    #[error("Failed to get Roblox Studio version from endpoint: {0}")]
-    #[cfg(all(target_os = "linux", feature = "vinegar"))]
-    VersionEndpointError(#[source] reqwest::Error),
-
-    #[error("Roblox Studio version not found in endpoint response")]
-    VersionNotFoundInEndpoint,
-
-    #[error("Vinegar installation not found for version {0}")]
-    VinegarInstallationNotFound(String),
+    #[error("Vinegar installation not found")]
+    VinegarInstallationNotFound,
 }
 
 #[derive(Debug, Clone)]
@@ -107,9 +99,8 @@ fn locate_executable_from_env() -> Option<Result<PathBuf>> {
 impl RobloxStudio {
     /// Attempts to find a Roblox Studio installation. It will start by looking up
     /// into the environment variable `ROBLOX_STUDIO_PATH`. If the variable is not
-    /// defined, it will find the usual installation on Windows and MacOS.
-    /// On Linux, it will look for a Vinegar (Flatpak) installation if the
-    /// `vinegar` feature is enabled.
+    /// defined, it will find the usual installation on Windows, MacOS, and Linux
+    /// (via Vinegar).
     ///
     /// On Windows (or WSL), the environment variable can point to a specific version (where
     /// the `RobloxStudioBeta.exe` file and `content` directory are located) or it
@@ -168,14 +159,7 @@ impl RobloxStudio {
 
     #[cfg(target_os = "linux")]
     fn locate_target_specific() -> Result<RobloxStudio> {
-        #[cfg(feature = "vinegar")]
-        {
-            Self::locate_vinegar()
-        }
-        #[cfg(not(feature = "vinegar"))]
-        {
-            Err(Error::PlatformNotSupported)
-        }
+        Self::locate_vinegar()
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -260,40 +244,23 @@ impl RobloxStudio {
     }
 
     #[cfg(target_os = "linux")]
-    #[cfg(feature = "vinegar")]
     fn locate_vinegar() -> Result<RobloxStudio> {
         let home = dirs::home_dir().ok_or(Error::HomeDirectoryNotFound)?;
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(Error::VersionEndpointError)?;
-
-        let url = "https://clientsettings.roblox.com/v2/client-version/WindowsStudio64";
-        let response = client
-            .get(url)
-            .send()
-            .map_err(Error::VersionEndpointError)?;
-
-        let body: serde_json::Value = response.json().map_err(Error::VersionEndpointError)?;
-
-        let guid = body
-            .get("clientVersionUpload")
-            .and_then(|v| v.as_str())
-            .ok_or(Error::VersionNotFoundInEndpoint)?;
-
-        let root = home
-            .join(".var/app/org.vinegarhq.Vinegar/data/vinegar/versions")
-            .join(guid);
-
-        if !root.is_dir() {
-            return Err(Error::VinegarInstallationNotFound(guid.to_string()));
+        let versions_dir = home.join(".var/app/org.vinegarhq.Vinegar/data/vinegar/versions");
+        if !versions_dir.is_dir() {
+            return Err(Error::VinegarInstallationNotFound);
         }
 
-        let application = root.join("RobloxStudioBeta.exe");
-        if !application.is_file() {
-            return Err(Error::VinegarInstallationNotFound(guid.to_string()));
-        }
+        let root = fs::read_dir(&versions_dir)
+            .map_err(|_| Error::VinegarInstallationNotFound)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .find_map(|e| {
+                let path = e.path().join("RobloxStudioBeta.exe");
+                path.is_file().then(|| e.path())
+            })
+            .ok_or(Error::VinegarInstallationNotFound)?;
 
         let user = env::var("USER").unwrap_or_default();
         let plugins = home
@@ -304,7 +271,7 @@ impl RobloxStudio {
 
         Ok(RobloxStudio {
             content: root.join("content"),
-            application,
+            application: root.join("RobloxStudioBeta.exe"),
             built_in_plugins: root.join("BuiltInPlugins"),
             plugins,
         })
