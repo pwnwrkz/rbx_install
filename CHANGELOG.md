@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0]
+## [1.0.0] - 24-08-2026
+
+### Changed
+
+- Failed platform detections are now cached alongside successes, so repeated calls never redo the filesystem/registry scan. A process restart is required to re-detect.
+- `Error` now implements `Clone` (the `RegistryError` source is reconstructed from kind and message).
+- The free `locate()` checks the detection cache before consulting `ROBLOX_STUDIO_PATH`; the environment variable must be set before the first call.
+- Plugin-directory lookup is skipped when no Roblox Studio installation is found on Windows-style layouts.
+- Reduced redundant path allocations in version-directory scanning (Windows fallback and Vinegar).
+
+### Added
+
+- Unit tests covering the Windows-style directory layout detection (`content` directory and `Versions` scan).
+
+## [0.2.0] - 31-07-2026
 
 ### Changed
 
@@ -26,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `VinegarInstallationNotFound` error variant for when the Vinegar versions directory exists but contains no valid Roblox Studio executable
 
-## [0.1.0]
+## [0.1.0] - 30-07-2026
 
 ### Added
 
