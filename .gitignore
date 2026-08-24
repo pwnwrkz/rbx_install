@@ -19,3 +19,29 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Agent instruction files
+# These are some examples of them, you may add more as you go.
+# Do correct these if they are outdated or anything!
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+.cursor/rules
+.mdc*
+.aider*
+.claude
+.github/copilot-instructions.md
+copilot-instructions.md
+.kilo
+.windsurfrules
+.windsurf/*
+.devin/*
+.roo/*
+.clinerules
+.continue/*
+.zed/*
+.warp/*
+.amazonq/rules/*
+.junie/*
+opencode.json
