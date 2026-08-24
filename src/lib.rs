@@ -15,8 +15,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 const ROBLOX_STUDIO_PATH_VARIABLE: &str = "ROBLOX_STUDIO_PATH";
 
-/// Cache for the expensive platform-specific lookup.
-static PLATFORM_STUDIO: OnceLock<RobloxStudio> = OnceLock::new();
+/// Cache for the expensive platform-specific lookup, including failures so
+/// that repeated calls never redo the filesystem scan.
+static PLATFORM_STUDIO: OnceLock<Result<RobloxStudio>> = OnceLock::new();
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -52,6 +53,26 @@ pub enum Error {
     VinegarInstallationNotFound,
 }
 
+impl Clone for Error {
+    fn clone(&self) -> Self {
+        match self {
+            Error::RegistryError(e) => {
+                Error::RegistryError(io::Error::new(e.kind(), e.to_string()))
+            }
+            Error::DocumentsDirectoryNotFound => Error::DocumentsDirectoryNotFound,
+            Error::MalformedRegistry => Error::MalformedRegistry,
+            Error::PlatformNotSupported => Error::PlatformNotSupported,
+            Error::PluginsDirectoryNotFound => Error::PluginsDirectoryNotFound,
+            Error::EnvironmentVariableError(message) => {
+                Error::EnvironmentVariableError(message.clone())
+            }
+            Error::NotInstalled => Error::NotInstalled,
+            Error::HomeDirectoryNotFound => Error::HomeDirectoryNotFound,
+            Error::VinegarInstallationNotFound => Error::VinegarInstallationNotFound,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RobloxStudio {
@@ -65,21 +86,20 @@ pub struct RobloxStudio {
 ///
 /// This is a convenience wrapper that preserves the semantics of the standalone
 /// `locate` function from earlier versions of this crate:
-/// * If `ROBLOX_STUDIO_PATH` is set, it must point directly to the executable.
-/// * Otherwise the platform-specific executable is located and cached.
+/// * The platform-specific executable is located and cached after the first
+///   call (including failures), making subsequent calls O(1).
+/// * If `ROBLOX_STUDIO_PATH` is set and the cache is cold, it must point
+///   directly to the executable; this value is never cached.
 pub fn locate() -> Result<PathBuf> {
+    if let Some(cached) = PLATFORM_STUDIO.get() {
+        return cached.clone().map(|studio| studio.application);
+    }
+
     if let Some(result) = locate_executable_from_env() {
         return result;
     }
 
-    if let Some(studio) = PLATFORM_STUDIO.get() {
-        return Ok(studio.application.clone());
-    }
-
-    let studio = RobloxStudio::locate_target_specific()?;
-    let application = studio.application.clone();
-    let _ = PLATFORM_STUDIO.set(studio);
-    Ok(application)
+    RobloxStudio::platform_locate().map(|studio| studio.application)
 }
 
 fn locate_executable_from_env() -> Option<Result<PathBuf>> {
@@ -107,20 +127,25 @@ impl RobloxStudio {
     /// can also point to the Roblox directory in AppData (`$APPDATA\Local\Roblox`)
     /// and it will find the latest version by itself.
     ///
-    /// The result of platform-specific detection is cached after the first successful
-    /// call, making subsequent calls O(1).
+    /// The result of platform-specific detection (success or failure) is cached
+    /// after the first call, making subsequent calls O(1). Environment overrides
+    /// are never cached.
     pub fn locate() -> Result<RobloxStudio> {
+        if let Some(cached) = PLATFORM_STUDIO.get() {
+            return cached.clone();
+        }
+
         if let Some(result) = Self::locate_from_env() {
             return result;
         }
 
-        if let Some(studio) = PLATFORM_STUDIO.get() {
-            return Ok(studio.clone());
-        }
+        Self::platform_locate()
+    }
 
-        let studio = Self::locate_target_specific()?;
-        let _ = PLATFORM_STUDIO.set(studio.clone());
-        Ok(studio)
+    fn platform_locate() -> Result<RobloxStudio> {
+        let result = Self::locate_target_specific();
+        let _ = PLATFORM_STUDIO.set(result.clone());
+        result
     }
 
     #[cfg(target_os = "windows")]
@@ -208,39 +233,39 @@ impl RobloxStudio {
     #[cfg(not(target_os = "macos"))]
     fn locate_from_windows_directory(root: PathBuf) -> Result<RobloxStudio> {
         let content_folder_path = root.join("content");
-        let plugins = Self::locate_plugins_on_windows()?;
 
         if content_folder_path.is_dir() {
-            Ok(RobloxStudio {
+            let plugins = Self::locate_plugins_on_windows()?;
+            return Ok(RobloxStudio {
                 content: content_folder_path,
                 application: root.join("RobloxStudioBeta.exe"),
                 built_in_plugins: root.join("BuiltInPlugins"),
                 plugins,
-            })
-        } else {
-            let versions = root.join("Versions");
-
-            if versions.is_dir() {
-                let version_dir = fs::read_dir(&versions)
-                    .map_err(|_| Error::NotInstalled)?
-                    .filter_map(|entry| entry.ok())
-                    .find_map(|entry| {
-                        let version = entry.path();
-                        let application = version.join("RobloxStudioBeta.exe");
-                        application.is_file().then_some(version)
-                    })
-                    .ok_or(Error::NotInstalled)?;
-
-                Ok(RobloxStudio {
-                    content: version_dir.join("content"),
-                    application: version_dir.join("RobloxStudioBeta.exe"),
-                    built_in_plugins: version_dir.join("BuiltInPlugins"),
-                    plugins,
-                })
-            } else {
-                Err(Error::NotInstalled)
-            }
+            });
         }
+
+        let versions = root.join("Versions");
+        if !versions.is_dir() {
+            return Err(Error::NotInstalled);
+        }
+
+        let version_dir = fs::read_dir(&versions)
+            .map_err(|_| Error::NotInstalled)?
+            .filter_map(|entry| entry.ok())
+            .find_map(|entry| {
+                let path = entry.path();
+                path.join("RobloxStudioBeta.exe").is_file().then_some(path)
+            })
+            .ok_or(Error::NotInstalled)?;
+
+        let plugins = Self::locate_plugins_on_windows()?;
+
+        Ok(RobloxStudio {
+            content: version_dir.join("content"),
+            application: version_dir.join("RobloxStudioBeta.exe"),
+            built_in_plugins: version_dir.join("BuiltInPlugins"),
+            plugins,
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -255,10 +280,9 @@ impl RobloxStudio {
         let root = fs::read_dir(&versions_dir)
             .map_err(|_| Error::VinegarInstallationNotFound)?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
             .find_map(|e| {
-                let path = e.path().join("RobloxStudioBeta.exe");
-                path.is_file().then(|| e.path())
+                let path = e.path();
+                path.join("RobloxStudioBeta.exe").is_file().then_some(path)
             })
             .ok_or(Error::VinegarInstallationNotFound)?;
 
@@ -310,5 +334,72 @@ impl RobloxStudio {
         let variable_value = env::var_os(ROBLOX_STUDIO_PATH_VARIABLE)?;
         let path = PathBuf::from(variable_value);
         Some(Self::locate_from_directory(path))
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn content_directory_layout_is_detected() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("content")).unwrap();
+
+        let studio =
+            RobloxStudio::locate_from_windows_directory(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(studio.content_path(), &root.path().join("content"));
+        assert_eq!(
+            studio.application_path(),
+            &root.path().join("RobloxStudioBeta.exe")
+        );
+        assert_eq!(
+            studio.built_in_plugins_path(),
+            &root.path().join("BuiltInPlugins")
+        );
+    }
+
+    #[test]
+    fn versions_layout_finds_executable_and_skips_decoys() {
+        let root = TempDir::new().unwrap();
+        let decoy = root.path().join("Versions").join("version-0");
+        let version = root.path().join("Versions").join("version-1");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::create_dir_all(version.join("content")).unwrap();
+        fs::write(version.join("RobloxStudioBeta.exe"), b"stub").unwrap();
+
+        let studio =
+            RobloxStudio::locate_from_windows_directory(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            studio.application_path(),
+            &version.join("RobloxStudioBeta.exe")
+        );
+        assert_eq!(studio.content_path(), &version.join("content"));
+        assert_eq!(
+            studio.built_in_plugins_path(),
+            &version.join("BuiltInPlugins")
+        );
+    }
+
+    #[test]
+    fn versions_layout_without_executable_is_not_installed() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("Versions").join("version-0")).unwrap();
+
+        let result = RobloxStudio::locate_from_windows_directory(root.path().to_path_buf());
+
+        assert!(matches!(result, Err(Error::NotInstalled)));
+    }
+
+    #[test]
+    fn empty_root_is_not_installed() {
+        let root = TempDir::new().unwrap();
+
+        let result = RobloxStudio::locate_from_windows_directory(root.path().to_path_buf());
+
+        assert!(matches!(result, Err(Error::NotInstalled)));
     }
 }
