@@ -19,6 +19,14 @@ const ROBLOX_STUDIO_PATH_VARIABLE: &str = "ROBLOX_STUDIO_PATH";
 /// that repeated calls never redo the filesystem scan.
 static PLATFORM_STUDIO: OnceLock<Result<RobloxStudio>> = OnceLock::new();
 
+fn studio_path_from_env() -> Option<&'static Path> {
+    static ENV_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    ENV_PATH
+        .get_or_init(|| env::var_os(ROBLOX_STUDIO_PATH_VARIABLE).map(PathBuf::from))
+        .as_deref()
+}
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 /// Everything that can go wrong while using roblox-install.
@@ -99,12 +107,11 @@ pub fn locate() -> Result<PathBuf> {
         return result;
     }
 
-    RobloxStudio::platform_locate().map(|studio| studio.application)
+    RobloxStudio::locate().map(|studio| studio.application)
 }
 
 fn locate_executable_from_env() -> Option<Result<PathBuf>> {
-    let variable_value = env::var_os(ROBLOX_STUDIO_PATH_VARIABLE)?;
-    let path = PathBuf::from(variable_value);
+    let path = studio_path_from_env()?.to_path_buf();
 
     if path.is_file() {
         Some(Ok(path))
@@ -120,7 +127,8 @@ impl RobloxStudio {
     /// Attempts to find a Roblox Studio installation. It will start by looking up
     /// into the environment variable `ROBLOX_STUDIO_PATH`. If the variable is not
     /// defined, it will find the usual installation on Windows, MacOS, and Linux
-    /// (via Vinegar).
+    /// (via Vinegar). Under WSL, the Windows installation is preferred and
+    /// Vinegar is used as a fallback; on native Linux it is the reverse.
     ///
     /// On Windows (or WSL), the environment variable can point to a specific version (where
     /// the `RobloxStudioBeta.exe` file and `content` directory are located) or it
@@ -184,7 +192,79 @@ impl RobloxStudio {
 
     #[cfg(target_os = "linux")]
     fn locate_target_specific() -> Result<RobloxStudio> {
-        Self::locate_vinegar()
+        if Self::is_wsl() {
+            return Self::locate_windows_install_via_mounts()
+                .or_else(|| Self::locate_vinegar().ok())
+                .ok_or(Error::NotInstalled);
+        }
+
+        Self::locate_vinegar().or_else(Self::locate_wsl_fallback)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn locate_wsl_fallback(vinegar_error: Error) -> Result<RobloxStudio> {
+        if !Self::is_wsl() {
+            return Err(vinegar_error);
+        }
+
+        Self::locate_windows_install_via_mounts().ok_or(vinegar_error)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_wsl() -> bool {
+        fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|release| release.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn locate_windows_install_via_mounts() -> Option<RobloxStudio> {
+        let drives = fs::read_dir("/mnt").ok()?.filter_map(|drive| drive.ok());
+
+        for drive in drives {
+            let users_dir = drive.path().join("Users");
+            let Ok(users) = fs::read_dir(&users_dir) else {
+                continue;
+            };
+
+            for user in users.filter_map(|user| user.ok()) {
+                let profile = user.path();
+                if let Some(studio) = Self::locate_windows_install_in_profile(
+                    &profile,
+                    &profile.join("AppData/Local/Roblox"),
+                ) {
+                    return Some(studio);
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn locate_windows_install_in_profile(
+        profile: &Path,
+        roblox_dir: &Path,
+    ) -> Option<RobloxStudio> {
+        let version_root = roblox_dir
+            .join("content")
+            .is_dir()
+            .then(|| roblox_dir.to_path_buf())
+            .or_else(|| {
+                let versions = roblox_dir.join("Versions");
+                fs::read_dir(versions)
+                    .ok()?
+                    .filter_map(|entry| entry.ok())
+                    .find(|entry| entry.path().join("RobloxStudioBeta.exe").is_file())
+                    .map(|entry| entry.path())
+            })?;
+
+        Some(RobloxStudio {
+            content: version_root.join("content"),
+            application: version_root.join("RobloxStudioBeta.exe"),
+            built_in_plugins: version_root.join("BuiltInPlugins"),
+            plugins: profile.join("AppData/Local/Roblox/Plugins"),
+        })
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -195,12 +275,20 @@ impl RobloxStudio {
 
     #[cfg(not(target_os = "macos"))]
     fn locate_plugins_on_windows() -> Result<PathBuf> {
-        let mut plugin_dir = dirs::home_dir().ok_or(Error::PluginsDirectoryNotFound)?;
-        plugin_dir.push("AppData");
-        plugin_dir.push("Local");
-        plugin_dir.push("Roblox");
-        plugin_dir.push("Plugins");
-        Ok(plugin_dir)
+        static WINDOWS_PLUGINS: OnceLock<Result<PathBuf>> = OnceLock::new();
+
+        WINDOWS_PLUGINS
+            .get_or_init(|| {
+                dirs::home_dir()
+                    .map(|home| {
+                        home.join("AppData")
+                            .join("Local")
+                            .join("Roblox")
+                            .join("Plugins")
+                    })
+                    .ok_or(Error::PluginsDirectoryNotFound)
+            })
+            .clone()
     }
 
     #[cfg(target_os = "windows")]
@@ -286,11 +374,11 @@ impl RobloxStudio {
             })
             .ok_or(Error::VinegarInstallationNotFound)?;
 
-        let user = env::var("USER").unwrap_or_default();
+        let user = env::var_os("USER").unwrap_or_default();
         let plugins = home
             .join(".var/app/org.vinegarhq.Vinegar/data/vinegar/prefix")
             .join("drive_c/users")
-            .join(&user)
+            .join(user)
             .join("AppData/Local/Roblox/Plugins");
 
         Ok(RobloxStudio {
@@ -330,10 +418,40 @@ impl RobloxStudio {
         &self.plugins
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn locate_from_env() -> Option<Result<RobloxStudio>> {
-        let variable_value = env::var_os(ROBLOX_STUDIO_PATH_VARIABLE)?;
-        let path = PathBuf::from(variable_value);
+        let path = studio_path_from_env()?.to_path_buf();
+        let plugins = Self::plugins_for_windows_root(&path);
+        Some(Self::locate_from_directory(path).map(|mut studio| {
+            studio.plugins = plugins;
+            studio
+        }))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn locate_from_env() -> Option<Result<RobloxStudio>> {
+        let path = studio_path_from_env()?.to_path_buf();
         Some(Self::locate_from_directory(path))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn plugins_for_windows_root(root: &Path) -> PathBuf {
+        let roblox_dir = if root.join("content").is_dir() {
+            match root.parent() {
+                Some(versions_dir)
+                    if versions_dir
+                        .file_name()
+                        .is_some_and(|name| name == "Versions") =>
+                {
+                    versions_dir.parent().unwrap_or(versions_dir)
+                }
+                Some(parent) => parent,
+                None => root,
+            }
+        } else {
+            root
+        };
+        roblox_dir.join("Plugins")
     }
 }
 
@@ -401,5 +519,22 @@ mod tests {
         let result = RobloxStudio::locate_from_windows_directory(root.path().to_path_buf());
 
         assert!(matches!(result, Err(Error::NotInstalled)));
+    }
+
+    #[test]
+    fn plugins_follow_env_provided_tree() {
+        let root = TempDir::new().unwrap();
+        let version = root.path().join("Versions").join("version-0");
+        fs::create_dir_all(version.join("content")).unwrap();
+        fs::write(version.join("RobloxStudioBeta.exe"), b"stub").unwrap();
+
+        assert_eq!(
+            RobloxStudio::plugins_for_windows_root(root.path()),
+            root.path().join("Plugins")
+        );
+        assert_eq!(
+            RobloxStudio::plugins_for_windows_root(&version),
+            root.path().join("Plugins")
+        );
     }
 }

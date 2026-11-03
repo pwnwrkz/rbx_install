@@ -1,7 +1,7 @@
 [package]
 name = "rbx_install"
 description = "Rust crate to locate Roblox Studio installations."
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license-file = "LICENSE"
 readme = "README.md"

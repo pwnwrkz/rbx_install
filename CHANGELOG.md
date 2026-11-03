@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 24-08-2026
+### Added
+
+- WSL fallback on Linux: when Vinegar detection fails under WSL, Windows Roblox Studio installations are auto-detected via mounted drives (`/mnt/*/Users/*/AppData/Local/Roblox`).
+- `rbx_install` CLI binary that prints the located installation paths (`application`, `content`, `built-in-plugins`, `plugins`, or all).
+
+### Changed
+
+- On WSL, the Windows Roblox Studio installation is now preferred over Vinegar (Vinegar remains the fallback). Point `ROBLOX_STUDIO_PATH` at the Vinegar versions directory to force Vinegar.
+- The free `locate()` now routes through `RobloxStudio::locate()` instead of duplicating detection logic.
+- `ROBLOX_STUDIO_PATH` resolution is memoized for the process lifetime, including the unset state.
+- The Windows-style plugins directory path is cached after first resolution.
+- Vinegar user path assembly uses `env::var_os("USER")` to avoid UTF-8 conversion.
+
+### Fixed
+
+- `plugins_path()` now respects `ROBLOX_STUDIO_PATH`: it is derived from the provided Roblox directory (e.g. `/mnt/c/Users/<name>/AppData/Local/Roblox`) instead of the host home directory.
+
+## [1.0.0] - 2026-08-24
 
 ### Changed
 
@@ -21,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unit tests covering the Windows-style directory layout detection (`content` directory and `Versions` scan).
 
-## [0.2.0] - 31-07-2026
+## [0.2.0] - 2026-07-31
 
 ### Changed
 
@@ -40,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `VinegarInstallationNotFound` error variant for when the Vinegar versions directory exists but contains no valid Roblox Studio executable
 
-## [0.1.0] - 30-07-2026
+## [0.1.0] - 2026-07-30
 
 ### Added
 
@@ -61,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `vinegar` (optional): Linux Vinegar support with `reqwest` + `serde_json`
 
-[Unreleased]: https://github.com/pwnwrkz/rbx_install/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pwnwrkz/rbx_install/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pwnwrkz/rbx_install/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/pwnwrkz/rbx_install/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pwnwrkz/rbx_install/releases/tag/v0.1.0

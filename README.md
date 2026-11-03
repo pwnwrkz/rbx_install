@@ -22,7 +22,7 @@ Alternatively, just add a new entry in your `Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
-rbx_install = "0.2.0"
+rbx_install = "1.1.0"
 ```
 
 ## Example
@@ -49,6 +49,16 @@ fn main() -> rbx_install::Result<()> {
 
     Ok(())
 }
+```
+
+## CLI
+
+The crate ships a small binary to inspect what it detects on your machine:
+
+```bash
+cargo install rbx_install
+rbx_install              # prints all paths
+rbx_install plugins      # prints just one path (application | content | built-in-plugins | plugins)
 ```
 
 ## License
